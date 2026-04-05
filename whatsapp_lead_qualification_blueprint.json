@@ -1,0 +1,339 @@
+{
+  "name": "WhatsApp Lead Qualification — GPT Scoring",
+  "flow": [
+    {
+      "id": 1,
+      "module": "gateway:CustomWebHook",
+      "version": 1,
+      "parameters": {
+        "hook": 1,
+        "maxResults": 1
+      },
+      "mapper": {},
+      "metadata": {
+        "designer": { "x": 0, "y": 0 },
+        "restore": {
+          "parameters": {
+            "hook": {
+              "label": "WhatsApp Inbound Webhook"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "hook",
+            "type": "hook:gateway-webhook",
+            "label": "Webhook",
+            "required": true
+          },
+          {
+            "name": "maxResults",
+            "type": "number",
+            "label": "Maximum number of results"
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "module": "util:SetVariables2",
+      "version": 1,
+      "parameters": {},
+      "mapper": {
+        "variables": [
+          {
+            "name": "senderName",
+            "value": "{{1.body.from_name}}"
+          },
+          {
+            "name": "senderPhone",
+            "value": "{{1.body.from}}"
+          },
+          {
+            "name": "messageBody",
+            "value": "{{1.body.body}}"
+          },
+          {
+            "name": "receivedAt",
+            "value": "{{now}}"
+          }
+        ]
+      },
+      "metadata": {
+        "designer": { "x": 300, "y": 0 },
+        "restore": {},
+        "expect": [
+          {
+            "name": "variables",
+            "type": "array",
+            "label": "Variables"
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "module": "openai-gpt-3:CreateCompletion",
+      "version": 1,
+      "parameters": {
+        "model": "gpt-4o",
+        "__IMTCONN__": 1
+      },
+      "mapper": {
+        "model": "gpt-4o",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a lead qualification assistant. Analyze inbound WhatsApp messages from potential clients and return ONLY a valid JSON object. Never add explanation, markdown, or extra text. Score the lead based on buying intent, urgency, and message quality."
+          },
+          {
+            "role": "user",
+            "content": "Analyze this WhatsApp message and return ONLY a JSON object:\n\nSender name: {{2.senderName}}\nPhone: {{2.senderPhone}}\nMessage: {{2.messageBody}}\n\nReturn exactly this structure:\n{\n  \"score\": (integer 1-10),\n  \"intent\": (\"high\", \"medium\", or \"low\"),\n  \"industry\": (best guess or \"unknown\"),\n  \"reason\": (one sentence max),\n  \"next_action\": (\"book_call\", \"send_info\", or \"nurture\"),\n  \"qualified\": (true if score >= 7, false otherwise)\n}"
+          }
+        ],
+        "temperature": 0,
+        "max_tokens": 500
+      },
+      "metadata": {
+        "designer": { "x": 600, "y": 0 },
+        "restore": {
+          "parameters": {
+            "model": {
+              "label": "GPT-4o"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "model",
+            "type": "select",
+            "label": "Model",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "module": "util:FunctionCall",
+      "version": 1,
+      "parameters": {},
+      "mapper": {
+        "code": "const raw = {{3.choices[].message.content}};\nlet cleaned = raw.trim();\nif (cleaned.startsWith('```')) {\n  cleaned = cleaned.replace(/```json/g, '').replace(/```/g, '').trim();\n}\ntry {\n  return JSON.parse(cleaned);\n} catch(e) {\n  return { score: 0, intent: 'unknown', qualified: false, error: e.message, raw: raw };\n}"
+      },
+      "metadata": {
+        "designer": { "x": 900, "y": 0 }
+      }
+    },
+    {
+      "id": 5,
+      "module": "builtin:BasicRouter",
+      "version": 1,
+      "parameters": {},
+      "mapper": {},
+      "metadata": {
+        "designer": { "x": 1200, "y": 0 }
+      },
+      "routes": [
+        {
+          "flow": [
+            {
+              "id": 6,
+              "module": "airtable:ActionCreateRecord",
+              "version": 1,
+              "parameters": {
+                "base": "YOUR_AIRTABLE_BASE_ID",
+                "table": "Leads"
+              },
+              "mapper": {
+                "fields": {
+                  "Lead Name": "{{2.senderName}}",
+                  "Phone": "{{2.senderPhone}}",
+                  "Message": "{{2.messageBody}}",
+                  "GPT Score": "{{4.score}}",
+                  "Intent": "{{4.intent}}",
+                  "Industry": "{{4.industry}}",
+                  "Reason": "{{4.reason}}",
+                  "Next Action": "{{4.next_action}}",
+                  "Status": "Qualified",
+                  "Date Received": "{{2.receivedAt}}"
+                }
+              },
+              "metadata": {
+                "designer": { "x": 1500, "y": -150 }
+              }
+            },
+            {
+              "id": 7,
+              "module": "slack:CreateMessage",
+              "version": 1,
+              "parameters": {
+                "channel": "#qualified-leads"
+              },
+              "mapper": {
+                "text": "*New Qualified Lead*\n\n*Name:* {{2.senderName}}\n*Phone:* {{2.senderPhone}}\n*Message:* {{2.messageBody}}\n\n*GPT Score:* {{4.score}}/10\n*Intent:* {{4.intent}}\n*Industry:* {{4.industry}}\n*Reason:* {{4.reason}}\n*Next Action:* {{4.next_action}}\n\nRespond within 15 minutes."
+              },
+              "metadata": {
+                "designer": { "x": 1800, "y": -150 }
+              }
+            },
+            {
+              "id": 8,
+              "module": "twilio:SendSms",
+              "version": 1,
+              "parameters": {},
+              "mapper": {
+                "to": "{{2.senderPhone}}",
+                "body": "Hi {{2.senderName}}, thanks for reaching out! A member of our team will be in touch within the next 15 minutes. In the meantime feel free to reply with any questions."
+              },
+              "metadata": {
+                "designer": { "x": 2100, "y": -150 }
+              }
+            }
+          ],
+          "label": "Qualified — Score 7 or above",
+          "filter": {
+            "name": "Score 7 or above",
+            "conditions": [
+              [
+                {
+                  "a": "{{4.score}}",
+                  "b": "7",
+                  "o": "number:greaterThanEquals"
+                }
+              ]
+            ]
+          }
+        },
+        {
+          "flow": [
+            {
+              "id": 9,
+              "module": "airtable:ActionCreateRecord",
+              "version": 1,
+              "parameters": {
+                "base": "YOUR_AIRTABLE_BASE_ID",
+                "table": "Leads"
+              },
+              "mapper": {
+                "fields": {
+                  "Lead Name": "{{2.senderName}}",
+                  "Phone": "{{2.senderPhone}}",
+                  "Message": "{{2.messageBody}}",
+                  "GPT Score": "{{4.score}}",
+                  "Intent": "{{4.intent}}",
+                  "Industry": "{{4.industry}}",
+                  "Reason": "{{4.reason}}",
+                  "Next Action": "nurture",
+                  "Status": "Nurture",
+                  "Date Received": "{{2.receivedAt}}"
+                }
+              },
+              "metadata": {
+                "designer": { "x": 1500, "y": 150 }
+              }
+            },
+            {
+              "id": 10,
+              "module": "twilio:SendSms",
+              "version": 1,
+              "parameters": {},
+              "mapper": {
+                "to": "{{2.senderPhone}}",
+                "body": "Hi {{2.senderName}}, thanks for getting in touch! We'd love to learn more about what you're looking for. Could you tell us a bit more about your needs and timeline? We're here to help."
+              },
+              "metadata": {
+                "designer": { "x": 1800, "y": 150 }
+              }
+            }
+          ],
+          "label": "Not Qualified — Score below 7",
+          "filter": {
+            "name": "Score below 7",
+            "conditions": [
+              [
+                {
+                  "a": "{{4.score}}",
+                  "b": "7",
+                  "o": "number:lessThan"
+                }
+              ]
+            ]
+          }
+        },
+        {
+          "flow": [
+            {
+              "id": 11,
+              "module": "google-sheets:addRow",
+              "version": 2,
+              "parameters": {
+                "spreadsheetId": "YOUR_GOOGLE_SHEET_ID",
+                "sheetId": "Error Log"
+              },
+              "mapper": {
+                "values": {
+                  "Timestamp": "{{now}}",
+                  "Sender": "{{2.senderName}}",
+                  "Phone": "{{2.senderPhone}}",
+                  "Message": "{{2.messageBody}}",
+                  "Error": "{{4.error}}",
+                  "Raw GPT Response": "{{4.raw}}",
+                  "Status": "Parse Failed"
+                }
+              },
+              "metadata": {
+                "designer": { "x": 1500, "y": 350 }
+              }
+            },
+            {
+              "id": 12,
+              "module": "slack:CreateMessage",
+              "version": 1,
+              "parameters": {
+                "channel": "#automation-alerts"
+              },
+              "mapper": {
+                "text": "*Lead Qualification Error*\n\nSender: {{2.senderName}}\nPhone: {{2.senderPhone}}\nError: {{4.error}}\n\nCheck the Error Log sheet for full details."
+              },
+              "metadata": {
+                "designer": { "x": 1800, "y": 350 }
+              }
+            }
+          ],
+          "label": "Error — Parse Failed",
+          "filter": {
+            "name": "Parse error",
+            "conditions": [
+              [
+                {
+                  "a": "{{4.error}}",
+                  "b": "",
+                  "o": "text:notEqual"
+                }
+              ]
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "instant": true,
+    "version": 1,
+    "scenario": {
+      "roundtrips": 1,
+      "maxErrors": 3,
+      "autoCommit": true,
+      "autoCommitTriggerLast": true,
+      "sequential": false,
+      "confidential": false,
+      "dataloss": false,
+      "dlq": false
+    },
+    "designer": {
+      "orphans": []
+    },
+    "zone": "eu1.make.com"
+  }
+}
